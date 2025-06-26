@@ -29,18 +29,30 @@ def store_steam_id(user_message: str, session) -> str:
 def fetch_steam_profile(steam_id: int) -> dict:
     """
     Fetch the Steam profile information for a given Steam ID.
+    Returns a dict. If an error occurs, returns a dict with an 'error' key and a message.
     """
     api_key = os.getenv('STEAM_API_KEY')
     if not api_key:
-        raise ValueError(
-            "Steam API key not found. Please set the STEAM_API_KEY environment variable.")
+        logging.error("Steam API key not found.")
+        return {"error": "Steam API key not found. Please set the STEAM_API_KEY environment variable."}
     url = f"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={api_key}&steamid={steam_id}&include_appinfo=1&format=json"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        logging.error(f"Steam API error: {response.status_code}")
-        return None
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 403:
+            logging.error(
+                "Steam API returned 403 Forbidden. Likely invalid API key or private profile.")
+            return {"error": "Steam API returned 403 Forbidden. Your profile may be private or the API key is invalid."}
+        if response.status_code != 200:
+            logging.error(f"Steam API error: {response.status_code}")
+            return {"error": f"Steam API error: {response.status_code}"}
+        data = response.json()
+        if 'response' in data and ('games' not in data['response'] or not data['response']['games']):
+            logging.warning("No games found or profile is private.")
+            return {"error": "No games found in your Steam profile, or your profile is private."}
+        return data
+    except Exception as e:
+        logging.error(f"Error fetching Steam profile: {e}")
+        return {"error": f"Error fetching Steam profile: {e}"}
 
 
 def analyze_profile(profile_data: dict, games_complete_df: pd.DataFrame) -> dict:

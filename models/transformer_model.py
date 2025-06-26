@@ -2,6 +2,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from config.config import TRANSFORMER_CHECKPOINT, DEVICE
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ def load_transformer_model():
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
-            llm_int8_enable_fp32_cpu_offload=True,
+            llm_int8_enable_fp32_cpu_offload=False,
             bnb_4bit_compute_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
 
@@ -31,7 +32,7 @@ def load_transformer_model():
         model = AutoModelForCausalLM.from_pretrained(
             TRANSFORMER_CHECKPOINT,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
+            device_map="cuda",
             quantization_config=bnb_config
         )
 
@@ -48,4 +49,6 @@ def load_transformer_model():
     except Exception as e:
         logger.error(
             f"Error loading Transformer model from {TRANSFORMER_CHECKPOINT}: {e}")
+        print("Exception traceback while loading transformer model:")
+        traceback.print_exc()
         return None, None

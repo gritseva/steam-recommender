@@ -37,4 +37,17 @@ Thumbs.db
 
 # Project specific
 *.log
-.env 
+.env
+
+# Data files
+/data/*.csv
+/data/*.pkl
+/data/*.json
+
+# Model files
+/models/*.pkl
+/models/*.keras
+/models/saved_checkpoint/
+
+# Vector store (auto-generated)
+/vector_store_minilm_extended/ 

@@ -1,3 +1,4 @@
+# data/preprocess.py
 import pandas as pd
 import re
 import logging
@@ -10,18 +11,18 @@ def preprocess_games_df(df: pd.DataFrame) -> pd.DataFrame:
     Clean and preprocess the games dataframe.
     - Converts the 'date_release' column to datetime.
     - Ensures 'app_id' is numeric and drops invalid rows.
-
-    Args:
-        df (pd.DataFrame): The raw games dataframe.
-
-    Returns:
-        pd.DataFrame: The preprocessed dataframe.
+    - Normalizes genre lists.
     """
     try:
         df['date_release'] = pd.to_datetime(
             df['date_release'], errors='coerce')
         df['app_id'] = pd.to_numeric(df['app_id'], errors='coerce')
         df = df.dropna(subset=['app_id']).astype({'app_id': int})
+
+        # Normalize genres right after loading
+        if 'genres' in df.columns:
+            df['genres'] = df['genres'].apply(normalize_genres)
+
         logger.info("Preprocessed games dataframe successfully.")
     except Exception as e:
         logger.error(f"Error preprocessing dataframe: {e}")
@@ -30,17 +31,17 @@ def preprocess_games_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_genres(genres):
     """
-    Normalize genres from a comma-separated string into a list of lowercase genres.
-
-    Args:
-        genres (str or list): The genres data.
-
-    Returns:
-        list: A list of normalized genre strings.
+    Normalize genres from a comma-separated string, list, or Series into a list of lowercase, stripped genre strings.
+    Handles various input formats gracefully.
     """
+    if genres is None or (isinstance(genres, float) and pd.isna(genres)):
+        return []
     if isinstance(genres, str):
-        return [genre.strip().lower() for genre in genres.split(',')]
-    return genres
+        return [genre.strip().lower() for genre in genres.split(',') if genre and genre.strip()]
+    if isinstance(genres, (list, pd.Series)):
+        # Filter out None or NaN values before processing
+        return [str(genre).strip().lower() for genre in genres if pd.notna(genre) and str(genre).strip()]
+    return []
 
 
 def clean_price(price_str):
@@ -128,13 +129,20 @@ def filter_games(games_df: pd.DataFrame, min_positive_ratio=70, min_user_reviews
         'Overwhelmingly Negative': -4
     }
     try:
-        games_df['rating_value'] = games_df['rating'].map(rating_order)
+        df_copy = games_df.copy()
+        df_copy['rating_value'] = df_copy['rating'].map(rating_order)
         min_rating_value = rating_order.get(min_rating, 0)
-        filtered = games_df[
-            (games_df['positive_ratio'] >= min_positive_ratio) &
-            (games_df['user_reviews'] >= min_user_reviews) &
-            (games_df['rating_value'] >= min_rating_value) &
-            (games_df['date_release'].dt.year >= earliest_release_year)
+
+        # Ensure date_release is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df_copy['date_release']):
+            df_copy['date_release'] = pd.to_datetime(
+                df_copy['date_release'], errors='coerce')
+
+        filtered = df_copy[
+            (df_copy['positive_ratio'] >= min_positive_ratio) &
+            (df_copy['user_reviews'] >= min_user_reviews) &
+            (df_copy['rating_value'] >= min_rating_value) &
+            (df_copy['date_release'].dt.year >= earliest_release_year)
         ]
         logger.info(
             f"Filtered games: from {len(games_df)} rows down to {len(filtered)} rows.")

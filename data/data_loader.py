@@ -1,3 +1,4 @@
+# data/data_loader.py
 import pandas as pd
 import json
 import logging
@@ -76,6 +77,12 @@ def merge_game_data(games_df: pd.DataFrame, new_games_data: pd.DataFrame) -> pd.
     try:
         merged_df = games_df.merge(
             new_games_data, on='app_id', how='left', suffixes=('', '_new'))
+        # For columns that exist in both, prefer the '_new' value if not null
+        for col in games_df.columns:
+            if col != 'app_id' and f"{col}_new" in merged_df.columns:
+                merged_df[col] = merged_df[f"{col}_new"].combine_first(
+                    merged_df[col])
+        # Drop all '_new' columns
         redundant_columns = [
             col for col in merged_df.columns if col.endswith('_new')]
         merged_df = merged_df.drop(columns=redundant_columns, errors='ignore')

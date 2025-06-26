@@ -1,94 +1,99 @@
+# utils/response_generation.py
 import re
 import logging
-from models.transformer_model import load_transformer_model
-
-
-# The generate_response function reloads the transformer model if needed.
-# In a production setup, you might store a reference to the loaded model in your application context to avoid reloading.
-
+import pandas as pd
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 logger = logging.getLogger(__name__)
 
 
+def move_to_device(batch, device):
+    return {k: v.to(device) if hasattr(v, "to") else v for k, v in batch.items()}
+
+
 def generate_custom_response(raw_text: str, cleaning_patterns: list = None) -> str:
-    """
-    Clean up raw generated text by removing instruction tokens and normalizing whitespace.
-
-    Args:
-        raw_text (str): The raw text from the model.
-        cleaning_patterns (list, optional): List of regex patterns to remove.
-
-    Returns:
-        str: The cleaned response text.
-    """
+    """Cleans up raw generated text."""
     if cleaning_patterns is None:
         cleaning_patterns = [
-            r'\[INST\].*?\[/INST\]',  # Remove instructional markers
-            r'<s>|</s>',              # Remove start/end tokens
-            r'\s+',                   # Normalize whitespace
+            r'\[INST\].*?\[/INST\]',
+            r'<s>|</s>',
         ]
     cleaned = raw_text
     for pattern in cleaning_patterns:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-    cleaned = cleaned.strip()
-    if len(cleaned.split()) < 5:
-        return "I'm here to help with game recommendations! Let me know what you're looking for."
+        cleaned = re.sub(pattern, ' ', cleaned,
+                         flags=re.DOTALL | re.IGNORECASE).strip()
+
+    if cleaned.startswith("You are a helpful game recommendation assistant"):
+        return "I've found some games you might like! Check them out."
+
+    if not cleaned or len(cleaned.split()) < 3:
+        return "I've found some games you might like! Check them out."
+
     return cleaned
 
 
-def generate_response(user_message: str, recommendations, session, max_new_tokens: int = 200) -> str:
-    """
-    Generate a friendly recommendation response using the list of recommended games.
+def generate_response(user_message: str, recommendations: pd.DataFrame, session, context, max_new_tokens: int = 200) -> str:
+    """Generate a friendly recommendation response using the list of recommended games."""
+    tokenizer = context.bot_data.get("tokenizer")
+    model = context.bot_data.get("transformer_model")
 
-    Constructs a prompt from the user message and a truncated list of recommendations,
-    then uses the transformer model to generate a dynamic response.
+    if not tokenizer or not model:
+        logger.error("Transformer model unavailable in generate_response.")
+        return "Based on what you told me, you might like these:\n\n" + "\n".join(
+            [f"🎮 *{row['title']}*" for _, row in recommendations.iterrows()]
+        )
 
-    Args:
-        user_message (str): The original user message.
-        recommendations (pd.DataFrame): DataFrame containing recommended game data.
-        session: The user session (for potential context).
-        max_new_tokens (int): Maximum tokens for generation.
-
-    Returns:
-        str: The generated response.
-    """
-    # Build a recommendation list with truncated descriptions
     recommendation_list = "\n".join([
-        f"{idx+1}. {row['title']}: {row['description'][:200]}..."
-        for idx, row in recommendations.head(3).iterrows()
+        f"- {row['title']}"
+        for _, row in recommendations.head(3).iterrows()
     ])
 
     prompt = (
-        "[INST] You are a helpful game recommendation assistant. Based on the user's interests, "
-        "provide a friendly, engaging response that introduces the following recommended games in 2-3 sentences.\n\n"
-        f"User message: {user_message}\n\n"
-        "Recommended games:\n"
+        "[INST] You are a friendly and enthusiastic game recommendation assistant. The user asked for games, and we found some. Briefly and conversationally introduce the recommendations. Mention one or two games by name. Keep it short (2-3 sentences).\n\n"
+        f"User's request: \"{user_message}\"\n"
+        "Games we found:\n"
         f"{recommendation_list}\n\n"
-        "Response:[/INST]"
+        "Your friendly response:[/INST]"
     )
-
-    # Load transformer model and tokenizer (using our existing loader)
-    tokenizer, model = load_transformer_model()
-    if tokenizer is None or model is None:
-        logger.error("Transformer model unavailable in generate_response.")
-        return generate_custom_response(prompt)
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt",
                            padding=True, truncation=True, max_length=512)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        if hasattr(inputs, 'to'):
+            inputs = inputs.to(model.device)
+        else:
+            inputs = move_to_device(inputs, model.device)
         output = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.65,
+            temperature=0.7,
             top_p=0.9,
-            repetition_penalty=1.15,
             pad_token_id=tokenizer.pad_token_id
         )
-        generated_text = tokenizer.decode(
-            output[0], skip_special_tokens=True).strip()
-        return generate_custom_response(generated_text)
+        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        intro = generate_custom_response(generated_text)
+        full_list = "\n\n" + "\n".join(
+            [f"🎮 *{row['title']}*\n_{row.get('about_game', 'No description available.')[:150].strip()}..._\n" for _,
+             row in recommendations.iterrows()]
+        )
+        return intro + full_list
     except Exception as e:
         logger.error(f"Error generating response: {e}")
-        return generate_custom_response(prompt)
+        return "I found some great games for you! Here they are:"
+
+
+def build_recommendation_keyboard(recommendations: pd.DataFrame) -> InlineKeyboardMarkup:
+    """Builds an inline keyboard with Like/Dislike buttons for each recommendation."""
+    keyboard = []
+    for _, game in recommendations.head(5).iterrows():
+        app_id = game['app_id']
+        title = (game['title'][:20] + '..') if len(game['title']
+                                                   ) > 22 else game['title']
+        keyboard.append([
+            InlineKeyboardButton(
+                f"👍 Like {title}", callback_data=f"like:{app_id}"),
+            InlineKeyboardButton(
+                "👎 Dislike", callback_data=f"dislike:{app_id}")
+        ])
+    return InlineKeyboardMarkup(keyboard)

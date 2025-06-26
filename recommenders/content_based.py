@@ -200,3 +200,31 @@ def get_advanced_similar_games(user_query: Union[str, List[str]], combined_df: p
     except Exception as e:
         logger.error(f"Error in advanced similar games search: {e}")
         return pd.DataFrame()
+
+
+def filter_disliked_games(games_df: pd.DataFrame, disliked_games: list) -> pd.DataFrame:
+    """
+    Remove games from the DataFrame whose titles or app_ids are in the disliked_games list.
+
+    Args:
+        games_df (pd.DataFrame): The complete games DataFrame.
+        disliked_games (list): List of disliked game titles or app_ids.
+
+    Returns:
+        pd.DataFrame: DataFrame with disliked games removed.
+    """
+    if not disliked_games or games_df is None or games_df.empty:
+        return games_df
+
+    # Try to match by title (case-insensitive)
+    filtered_df = games_df[~games_df['title'].str.lower().isin(
+        [str(g).lower() for g in disliked_games])]
+
+    # If app_id column exists and disliked_games contains numeric ids, also filter by app_id
+    if 'app_id' in games_df.columns:
+        disliked_ids = [g for g in disliked_games if str(g).isdigit()]
+        if disliked_ids:
+            filtered_df = filtered_df[~filtered_df['app_id'].astype(
+                str).isin([str(g) for g in disliked_ids])]
+
+    return filtered_df

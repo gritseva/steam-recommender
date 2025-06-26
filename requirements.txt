@@ -3,6 +3,7 @@
 
 rapidfuzz
 python-levenshtein
+fuzzywuzzy
 
 bitsandbytes==0.44.1
 transformers==4.46.1
@@ -17,7 +18,8 @@ chromadb
 
 google-api-python-client
 dateparser
-googletrans==4.0.0-rc1
+deep-translator
+langdetect
 
 python-telegram-bot
 numpy
@@ -26,3 +28,6 @@ tensorflow
 scikit-learn
 joblib
 requests
+
+sentencepiece
+accelerate>=0.26.0

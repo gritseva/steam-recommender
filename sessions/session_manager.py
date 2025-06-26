@@ -69,20 +69,23 @@ class UserSession:
 _sessions = {}
 
 
-def get_user_session(user_id) -> UserSession:
+def get_user_session(user_id, vector_store=None) -> UserSession:
     """
     Retrieve the session for the given user_id. If no session exists, create a new one.
-
+    Optionally attach a vector_store if provided and not already set.
     Args:
         user_id: The unique identifier for the user (e.g., Telegram chat ID).
-
+        vector_store: The shared vector store instance (optional).
     Returns:
         UserSession: The user's session object.
     """
     if user_id not in _sessions:
         _sessions[user_id] = UserSession()
         logger.info(f"Created new session for user_id: {user_id}")
-    return _sessions[user_id]
+    session = _sessions[user_id]
+    if vector_store is not None and session.vector_store is None:
+        session.vector_store = vector_store
+    return session
 
 
 def clear_user_session(user_id):

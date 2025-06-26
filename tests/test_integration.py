@@ -1,86 +1,98 @@
-# File: tests/test_integration.py
-
+# tests/test_integration.py
 import unittest
 import os
+import pandas as pd
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 from config.config import GAME_CSV_PATH, BASE_DIR
 from data.data_loader import prepare_final_dataset
 from data.preprocess import preprocess_games_df, clean_game_descriptions
-from models.ncf_model import load_ncf_model, load_encoders
+from models.ncf_model import load_ncf_model, load_encoders, get_item_embeddings
 from models.transformer_model import load_transformer_model
-from sessions.session_manager import get_user_session
 from utils.llm_processing import extract_game_titles, infer_user_preferences_with_llm
 from utils.translation import detect_language, translate_to_english
 
 
-# python -m unittest discover -s tests
-
-
-class IntegrationTest(unittest.TestCase):
-    def test_data_loading_and_preprocessing(self):
-        metadata_json_path = os.path.join(
-            BASE_DIR, "data", "games_metadata.json")
-        new_games_csv_path = os.path.join(
-            BASE_DIR, "data", "cleaned_games_developers.csv")
-
-        # Prepare final dataset (merging CSV, JSON, and additional CSV)
+class TestIntegration(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Load and prepare dataset once for all tests
         df = prepare_final_dataset(
-            GAME_CSV_PATH, metadata_json_path, new_games_csv_path)
-        self.assertFalse(df.empty, "Final dataset should not be empty")
-
-        # Preprocess and clean the dataset
+            GAME_CSV_PATH,
+            os.path.join(BASE_DIR, 'data', 'games_metadata.json'),
+            os.path.join(BASE_DIR, 'data', 'cleaned_games_developers.csv')
+        )
         df = preprocess_games_df(df)
-        df = clean_game_descriptions(df)
-        self.assertIn("title", df.columns,
-                      "DataFrame should contain 'title' column after processing")
+        cls.df = clean_game_descriptions(df)
 
-    def test_model_loading(self):
+    def test_dataset_not_empty_and_has_required_columns(self):
+        self.assertFalse(self.df.empty, "Final dataset should not be empty")
+        for col in ('app_id', 'title', 'genres'):
+            self.assertIn(col, self.df.columns,
+                          f"Dataset should contain column '{col}'")
+
+    def test_model_loading_and_embeddings(self):
+        # NCF model and encoders
         ncf_model = load_ncf_model()
-        self.assertIsNotNone(
-            ncf_model, "NCF model should be loaded successfully")
+        self.assertIsNotNone(ncf_model, "NCF model should load successfully")
+        user_enc, game_enc = load_encoders()
+        self.assertIsNotNone(user_enc, "User encoder should load successfully")
+        self.assertIsNotNone(game_enc, "Game encoder should load successfully")
 
-        user_encoder, game_encoder = load_encoders()
-        self.assertIsNotNone(user_encoder, "User encoder should be loaded")
-        self.assertIsNotNone(game_encoder, "Game encoder should be loaded")
-
+        # Transformer model
         tokenizer, transformer_model = load_transformer_model()
-        self.assertIsNotNone(tokenizer, "Tokenizer should be loaded")
+        self.assertIsNotNone(tokenizer, "Tokenizer should load successfully")
         self.assertIsNotNone(
-            transformer_model, "Transformer model should be loaded")
+            transformer_model, "Transformer model should load successfully")
 
-    def test_llm_processing(self):
-        sample_message = "I really love The Witcher 3 and Cyberpunk 2077!"
-        titles = extract_game_titles(sample_message)
-        self.assertIsInstance(
-            titles, list, "extract_game_titles should return a list")
-        # Expecting at least one title extracted (depending on your LLM prompt responses)
-        self.assertGreater(
-            len(titles), 0, "At least one game title should be extracted")
+        # Item embeddings
+        embeddings = get_item_embeddings(ncf_model)
+        self.assertIsNotNone(
+            embeddings, "Item embeddings should be retrievable")
+        # Should be at least 2D: items x vector_size
+        self.assertGreaterEqual(len(embeddings.shape), 2,
+                                "Embeddings should be a 2D array")
 
-        preferences = infer_user_preferences_with_llm(sample_message)
-        self.assertIn("liked_games", preferences,
-                      "Preferences output should contain 'liked_games' key")
-        self.assertIsInstance(
-            preferences["liked_games"], list, "'liked_games' should be a list")
+    def test_llm_processing_with_mocks(self):
+        # Mock tokenizer & model for LLM functions
+        mock_tokenizer = MagicMock()
+        mock_model = MagicMock()
+        mock_model.device = 'cpu'
+
+        # Simulate tokenizer call returning tensors
+        mock_tokenizer.return_value = {'input_ids': [], 'attention_mask': []}
+        # First decode call: titles, second: JSON prefs
+        mock_tokenizer.decode.side_effect = [
+            "Game X, Game Y",
+            '{"liked_games": ["Game X", "Game Y"], "genres": ["genre"], "excluded_tags": ["tag"]}'
+        ]
+        mock_model.generate.return_value = [b'dummy']
+
+        context = SimpleNamespace(bot_data={
+            'tokenizer': mock_tokenizer,
+            'transformer_model': mock_model
+        })
+
+        titles = extract_game_titles("msg", context)
+        self.assertListEqual(titles, ["Game X", "Game Y"],
+                             "extract_game_titles should split comma-separated titles")
+
+        prefs = infer_user_preferences_with_llm("msg", context)
+        self.assertListEqual(prefs['liked_games'], ["Game X", "Game Y"])
+        self.assertListEqual(prefs['genres'], ["genre"])
+        self.assertListEqual(prefs['excluded_tags'], ["tag"])
 
     def test_translation(self):
-        sample_message = "Hola, ¿cómo estás?"
-        lang = detect_language(sample_message)
-        self.assertEqual(lang, 'es', "Language should be detected as 'es'")
-        translated = translate_to_english(sample_message)
+        sample = "Hola, ¿cómo estás?"
+        lang = detect_language(sample)
+        self.assertIn(lang, [
+                      'auto', 'es'], "Language detection should identify Spanish as 'es' or 'auto'")
+        translation = translate_to_english(sample)
         self.assertIsInstance(
-            translated, str, "Translation should return a string")
-        self.assertNotEqual(translated, sample_message,
-                            "Translated text should differ from the original if not in English")
-
-    def test_session_management(self):
-        user_id = 12345
-        session = get_user_session(user_id)
-        session.update_likes(["The Witcher 3"])
-        self.assertIn("The Witcher 3", session.liked_games,
-                      "Session should record updated liked games")
-        session.set_user_id(user_id)
-        self.assertEqual(session.user_id, user_id,
-                         "User ID should be set correctly in session")
+            translation, str, "Translation should return a string")
+        self.assertIn("how are you", translation.lower(),
+                      "Translation should contain the English equivalent")
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@ import logging
 import requests
 import pandas as pd
 from datetime import datetime
+from utils.game_utils import match_titles_to_app_ids
 
 logger = logging.getLogger(__name__)
 
@@ -101,24 +102,3 @@ def track_price_changes(app_list: list, download_path: str = '../data', filename
             f"Tracked price for app {appid} at {price_data['date']}: {price_data['current_price']}")
         price_data_list.append(price_data)
     return price_data_list
-
-
-def match_titles_to_app_ids(titles: list, games_complete_df: pd.DataFrame) -> list:
-    """
-    Match game titles to their app IDs using case-insensitive substring matching.
-
-    Args:
-        titles (list): List of game titles.
-        games_complete_df (pd.DataFrame): DataFrame containing game information.
-
-    Returns:
-        list: List of matched app IDs.
-    """
-    app_ids = []
-    games_complete_df['title'] = games_complete_df['title'].astype(str)
-    for title in titles:
-        match = games_complete_df[games_complete_df['title'].str.contains(
-            title, case=False, na=False)]
-        if not match.empty:
-            app_ids.append(match.iloc[0]['app_id'])
-    return app_ids
