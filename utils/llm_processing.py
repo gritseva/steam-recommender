@@ -152,8 +152,7 @@ def infer_user_preferences_with_llm(user_message: str, context) -> Dict[str, Uni
 
 def parse_user_intent(user_message: str, context) -> str:
     """
-    Classify user intent into one of our categories, using few-shot examples
-    (including a “tell me more about” case) so we don’t need any hard-coded rules.
+    Classify user intent into one of our categories, using few-shot examples.
     """
     tokenizer = context.bot_data.get("tokenizer")
     model = context.bot_data.get("transformer_model")
@@ -168,11 +167,9 @@ def parse_user_intent(user_message: str, context) -> str:
         "genre_exploration", "content_filter", "game_session_reminder"
     ]
 
-    # Few‐shot examples to anchor “tell me more about …” into additional_info
     examples = [
         ("Hi!", "greeting"),
         ("Tell me a joke", "out_of_context"),
-        ("What's the weather like today?", "out_of_context"),
         ("How do I cook pasta?", "out_of_context"),
         ("What's the capital of France?", "out_of_context"),
         ("Can you recommend some new RPGs?", "recommend_games"),
@@ -219,21 +216,28 @@ def parse_user_intent(user_message: str, context) -> str:
 
         output = model.generate(
             **inputs,
-            max_new_tokens=8,
+            max_new_tokens=30,      # FIXED: Increased from 8 to allow for longer category names
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
         result = tokenizer.decode(
-            output[0], skip_special_tokens=True).strip().lower()
+            output[0], skip_special_tokens=True).strip()
 
-        # pick the category whose last occurrence is furthest right
-        best_cat, best_idx = "unknown", -1
+        # FIXED: Clean the prompt echo from the result
+        if "[/INST]" in result:
+            result = result.split("[/INST]", 1)[1].strip()
+
+        # FIXED: Use a more robust parsing logic
+        result = result.lower()
         for cat in categories:
-            idx = result.rfind(cat)
-            if idx > best_idx:
-                best_idx, best_cat = idx, cat
+            if cat in result:
+                logger.info(
+                    f"LLM output '{result}' classified as intent '{cat}'")
+                return cat
 
-        return best_cat
+        logger.warning(
+            f"Could not classify intent from LLM output: '{result}' for message: '{user_message}'")
+        return "unknown"
 
     except Exception:
         logger.exception("Error in parse_user_intent")
