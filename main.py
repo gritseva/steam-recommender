@@ -5,7 +5,7 @@ from data.data_loader import prepare_final_dataset
 from data.preprocess import preprocess_games_df, clean_game_descriptions
 from models.ncf_model import load_ncf_model, load_encoders
 from models.transformer_model import load_transformer_model
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # If you have a logging utilities module, you can call its setup function.
 # Otherwise, we'll configure basic logging.
@@ -13,10 +13,13 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 
 def setup_logging():
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler()]
     )
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Logging configured at DEBUG level - all recommendation steps will be logged")
 
 
 def main():
@@ -24,6 +27,8 @@ def main():
     setup_logging()
     logger = logging.getLogger(__name__)
     logger.info("Starting Game Recommender Bot...")
+    logger.info(
+        "DEBUG: All recommendation pipeline steps will be logged with [RECOMMENDATION], [COLLABORATIVE], [CONTENT-BASED], [INTENT], and [GAME_EXTRACTION] tags")
 
     # --- Load Data ---
     metadata_json_path = os.path.join(BASE_DIR, "data", "games_metadata.json")
@@ -103,6 +108,30 @@ def main():
     from handlers.intent_router import route_message
     dispatcher.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, route_message))
+
+    def button_callback_handler(update, context):
+        from sessions.session_manager import get_user_session
+        query = update.callback_query
+        query.answer()
+        action, app_id_str = query.data.split(':')
+        app_id = int(app_id_str)
+        session = get_user_session(query.from_user.id)
+        games_complete_df = context.bot_data["games_complete_df"]
+        game_row = games_complete_df.query(f"app_id == {app_id}")
+        if not game_row.empty:
+            game_title = game_row['title'].iloc[0]
+        else:
+            game_title = f"AppID {app_id}"
+        if action == 'like':
+            session.update_likes([game_title])
+            query.edit_message_text(
+                text=f"Got it! You liked {game_title}. I'll remember that for next time.")
+        elif action == 'dislike':
+            session.update_dislikes([game_title])
+            query.edit_message_text(
+                text=f"Okay, you disliked {game_title}. I won't recommend it again.")
+
+    dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
 
     # --- Start the Bot ---
     application.run_polling()

@@ -54,14 +54,33 @@ class DummyEncoder:
 
 class TestRecommenders(unittest.TestCase):
     def setUp(self):
-        # Create a simple DataFrame of 10 games
+        # Mock DataFrame with a variety of games
         self.df = pd.DataFrame({
-            'app_id': list(range(1, 11)),
-            'title': [f"Game {i}" for i in range(1, 11)],
-            'tags': [['action', 'adventure'] for _ in range(10)],
-            'date_release': pd.to_datetime(['2020-01-01']*10)
+            'app_id': [1, 2, 3, 4, 5, 6, 7],
+            'title': [
+                "Horror Game A", "Horror Game B", "Action Game C",
+                "Horror Game A: DLC", "Horror Game A Remake", "Puzzle Game D", "Input Game SOMA"
+            ],
+            'tags': [
+                ['horror', 'survival'], [
+                    'horror', 'psychological'], ['action', 'shooter'],
+                ['horror', 'survival'], ['horror', 'survival'], [
+                    'puzzle'], ['horror', 'sci-fi']
+            ],
+            'genres': [
+                ['Horror', 'Survival'], [
+                    'Horror', 'Psychological'], ['Action', 'Shooter'],
+                ['Horror', 'Survival'], ['Horror', 'Survival'], [
+                    'Puzzle'], ['Horror', 'Sci-Fi']
+            ],
+            'date_release': pd.to_datetime([
+                '2022-01-01', '2023-01-01', '2022-05-01',
+                '2022-06-01', '2024-01-01', '2021-01-01', '2015-01-01'
+            ]),
+            'positive_ratio': [90, 85, 70, 60, 80, 75, 95]
         })
-        self.vector_store = DummyVectorStore()
+        self.DummyDoc = DummyDoc
+        self.vector_store = MagicMock()
         self.ncf_model = DummyNCFModel()
         self.user_encoder = DummyEncoder()
         self.game_encoder = DummyEncoder()
@@ -77,19 +96,73 @@ class TestRecommenders(unittest.TestCase):
                                    'nonexistent'], exclude_genres=None)
         self.assertTrue(empty.empty)
 
-    def test_get_advanced_similar_games_basic(self):
+    def test_get_advanced_similar_games_happy_path(self):
+        # similarity_search returns docs for app_ids 1, 2, 7 (the input)
+        self.vector_store.similarity_search.return_value = [
+            self.DummyDoc(1), self.DummyDoc(2), self.DummyDoc(7)]
         recs = get_advanced_similar_games(
-            user_query='Game',
+            user_query="Input Game SOMA",
             combined_df=self.df,
             vector_store=self.vector_store,
-            genres=['action'],
-            release_year_filter={'comparator': 'after', 'year': 2019},
             k=5
         )
-        # Should be a DataFrame up to k rows
-        self.assertIsInstance(recs, pd.DataFrame)
-        self.assertLessEqual(len(recs), 5)
-        self.assertIn('app_id', recs.columns)
+        self.assertEqual(len(recs), 2)
+        self.assertIn("Horror Game A", recs['title'].values)
+        self.assertIn("Horror Game B", recs['title'].values)
+        self.assertNotIn("Input Game SOMA", recs['title'].values)
+
+    def test_get_advanced_similar_games_genre_filtering(self):
+        self.vector_store.similarity_search.return_value = [
+            self.DummyDoc(1), self.DummyDoc(2), self.DummyDoc(3)]
+        recs = get_advanced_similar_games(
+            user_query="Input Game SOMA",
+            combined_df=self.df,
+            vector_store=self.vector_store,
+            genres=['horror'],
+            k=5
+        )
+        self.assertIn("Horror Game A", recs['title'].values)
+        self.assertIn("Horror Game B", recs['title'].values)
+        self.assertNotIn("Action Game C", recs['title'].values)
+
+    def test_get_advanced_similar_games_exclude_dlc_and_input(self):
+        self.vector_store.similarity_search.return_value = [
+            self.DummyDoc(1), self.DummyDoc(4), self.DummyDoc(7)]
+        recs = get_advanced_similar_games(
+            user_query=["Input Game SOMA"],
+            combined_df=self.df,
+            vector_store=self.vector_store,
+            k=5
+        )
+        self.assertIn("Horror Game A", recs['title'].values)
+        self.assertNotIn("Horror Game A: DLC", recs['title'].values)
+        self.assertNotIn("Input Game SOMA", recs['title'].values)
+
+    def test_get_advanced_similar_games_fuzzy_duplicate_removal(self):
+        self.vector_store.similarity_search.return_value = [
+            self.DummyDoc(1), self.DummyDoc(5)]
+        recs = get_advanced_similar_games(
+            user_query="Input Game SOMA",
+            combined_df=self.df,
+            vector_store=self.vector_store,
+            k=5,
+            similarity_threshold=90
+        )
+        # Only one of the two very similar titles should be present
+        titles = recs['title'].values
+        self.assertTrue(
+            ("Horror Game A" in titles) != ("Horror Game A Remake" in titles)
+        )
+
+    def test_get_advanced_similar_games_no_results(self):
+        self.vector_store.similarity_search.return_value = []
+        recs = get_advanced_similar_games(
+            user_query="Input Game SOMA",
+            combined_df=self.df,
+            vector_store=self.vector_store,
+            k=5
+        )
+        self.assertTrue(recs.empty)
 
     def test_collaborative_filtering_with_fallback(self):
         recs = collaborative_filtering_with_fallback(

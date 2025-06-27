@@ -130,48 +130,82 @@ def get_advanced_similar_games(user_query: Union[str, List[str]], combined_df: p
     """
     Retrieve the top-k similar games to the user query using vector-based similarity search,
     with additional genre and release year filtering and fuzzy matching to remove duplicates.
-
-    Args:
-        user_query (Union[str, List[str]]): The input query (game title(s) or description).
-        combined_df (pd.DataFrame): The complete games DataFrame.
-        vector_store: The vector store that supports similarity_search(query, k).
-        genres (Optional[List[str]]): Optional list of genres to filter recommendations.
-        release_year_filter (Optional[dict]): Optional dictionary with keys "comparator" and "year" for release year filtering.
-        k (int): Number of final recommendations.
-        similarity_threshold (int): Threshold for fuzzy matching to remove similar titles.
-        retrieval_multiplier (int): Multiplier for expanding the initial candidate pool.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing the top k unique recommended games.
     """
+    logger.info(f"[CONTENT-BASED] Starting advanced similar games search")
+    logger.info(f"[CONTENT-BASED] User query: {user_query}")
+    logger.info(
+        f"[CONTENT-BASED] Target k: {k}, retrieval_multiplier: {retrieval_multiplier}")
+    logger.info(
+        f"[CONTENT-BASED] Available games in combined_df: {len(combined_df)}")
+
     query_text = " ".join(user_query) if isinstance(
         user_query, list) else user_query
+    logger.info(f"[CONTENT-BASED] Processed query text: '{query_text}'")
+
+    # Create a set of lowercased input titles to filter out later
+    input_titles_lower = set()
+    if isinstance(user_query, list):
+        input_titles_lower = {title.lower() for title in user_query}
+        logger.info(
+            f"[CONTENT-BASED] Input titles to filter out: {input_titles_lower}")
+
     try:
+        # Step 1: Vector similarity search
+        logger.info(
+            f"[CONTENT-BASED] Performing vector similarity search with k={k * retrieval_multiplier}")
         results = vector_store.similarity_search(
             query=query_text, k=k * retrieval_multiplier)
+        logger.info(
+            f"[CONTENT-BASED] Vector store returned {len(results) if results else 0} results")
+
         if not results:
-            logger.warning("No results from vector similarity search.")
+            logger.warning(
+                "[CONTENT-BASED] No results from vector similarity search.")
             return pd.DataFrame()
 
-        # Extract app_ids from search results
+        # Step 2: Extract app_ids from search results
         app_ids = [doc.metadata['app_id'] for doc in results]
+        logger.info(
+            f"[CONTENT-BASED] Extracted app_ids from vector results: {app_ids}")
+
         recommendations = combined_df[combined_df['app_id'].isin(
             app_ids)].copy()
+        logger.info(
+            f"[CONTENT-BASED] Initial recommendations after vector search: {len(recommendations)} games")
+        if not recommendations.empty:
+            logger.info(
+                f"[CONTENT-BASED] Initial game titles: {recommendations['title'].tolist()}")
 
-        # Exclude irrelevant content (like DLCs or Mods)
+        # Step 3: Exclude irrelevant content (like DLCs or Mods)
         exclude_keywords = ['DLC', 'Bonus Content', 'Expansion', 'Mod']
+        logger.info(
+            f"[CONTENT-BASED] Filtering out keywords: {exclude_keywords}")
         recommendations = recommendations[~recommendations['title'].str.contains(
             '|'.join(exclude_keywords), case=False, na=False)]
+        logger.info(
+            f"[CONTENT-BASED] After DLC/Bonus/Expansion/Mod filtering: {len(recommendations)} games")
+        if not recommendations.empty:
+            logger.info(
+                f"[CONTENT-BASED] Games after DLC filtering: {recommendations['title'].tolist()}")
 
-        # Filter by genres if provided
+        # Step 4: Filter by genres if provided
         if genres:
+            logger.info(
+                f"[CONTENT-BASED] Applying genre filtering for: {genres}")
             recommendations = recommendations[recommendations['tags'].apply(
                 lambda tags: any(genre.lower() in (t.lower()
                                  for t in tags) for genre in genres)
             )]
+            logger.info(
+                f"[CONTENT-BASED] After genre filtering: {len(recommendations)} games")
+            if not recommendations.empty:
+                logger.info(
+                    f"[CONTENT-BASED] Games after genre filtering: {recommendations['title'].tolist()}")
 
-        # Filter by release year if provided
+        # Step 5: Filter by release year if provided
         if release_year_filter:
+            logger.info(
+                f"[CONTENT-BASED] Applying release year filter: {release_year_filter}")
             recommendations['date_release'] = pd.to_datetime(
                 recommendations['date_release'], errors='coerce')
             comparator, year = release_year_filter.get(
@@ -182,8 +216,27 @@ def get_advanced_similar_games(user_query: Union[str, List[str]], combined_df: p
                 recommendations = recommendations[recommendations['date_release'].dt.year < year]
             elif comparator == "exact":
                 recommendations = recommendations[recommendations['date_release'].dt.year == year]
+            logger.info(
+                f"[CONTENT-BASED] After release year filtering: {len(recommendations)} games")
+            if not recommendations.empty:
+                logger.info(
+                    f"[CONTENT-BASED] Games after year filtering: {recommendations['title'].tolist()}")
 
-        # Apply fuzzy matching to remove duplicate or very similar titles
+        # Step 6: Filter out input games from recommendations
+        if input_titles_lower:
+            logger.info(
+                f"[CONTENT-BASED] Filtering out input games: {input_titles_lower}")
+            recommendations = recommendations[~recommendations['title'].str.lower().isin(
+                input_titles_lower)]
+            logger.info(
+                f"[CONTENT-BASED] After filtering out input games: {len(recommendations)} games")
+            if not recommendations.empty:
+                logger.info(
+                    f"[CONTENT-BASED] Games after input filtering: {recommendations['title'].tolist()}")
+
+        # Step 7: Apply fuzzy matching to remove duplicate or very similar titles
+        logger.info(
+            f"[CONTENT-BASED] Applying fuzzy duplicate removal with threshold: {similarity_threshold}")
         unique_recs = []
         seen_titles = set()
         for _, row in recommendations.iterrows():
@@ -195,10 +248,23 @@ def get_advanced_similar_games(user_query: Union[str, List[str]], combined_df: p
                 break
 
         logger.info(
-            f"Advanced similar games search returned {len(unique_recs)} unique recommendations.")
-        return pd.DataFrame(unique_recs).head(k)
+            f"[CONTENT-BASED] After fuzzy deduplication: {len(unique_recs)} unique games")
+        if unique_recs:
+            logger.info(
+                f"[CONTENT-BASED] Final unique recommendations: {[row['title'] for row in unique_recs]}")
+
+        final_df = pd.DataFrame(unique_recs).head(k)
+        logger.info(
+            f"[CONTENT-BASED] Final result: {len(final_df)} recommendations")
+        if not final_df.empty:
+            logger.info(
+                f"[CONTENT-BASED] Final recommendations: {final_df['title'].tolist()}")
+
+        return final_df
+
     except Exception as e:
-        logger.error(f"Error in advanced similar games search: {e}")
+        logger.error(
+            f"[CONTENT-BASED] Error in advanced similar games search: {e}")
         return pd.DataFrame()
 
 

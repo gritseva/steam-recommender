@@ -45,16 +45,23 @@ def collaborative_filtering(user_embedding: np.ndarray, ncf_model, game_encoder,
         pd.DataFrame: DataFrame containing recommended games.
     """
     try:
-        # Retrieve item embeddings from the model
         item_embeddings = ncf_model.get_layer(
             'item_embedding').get_weights()[0]
+        logger.debug(
+            f"Item embeddings shape: {item_embeddings.shape}, User embedding shape: {user_embedding.shape}")
         similarity_scores = cosine_similarity(
             user_embedding.reshape(1, -1), item_embeddings).flatten()
         top_indices = similarity_scores.argsort()[-top_n:][::-1]
+        logger.debug(
+            f"Top similarity scores: {similarity_scores[top_indices]}")
         recommended_app_ids = game_encoder.inverse_transform(top_indices)
+        logger.debug(f"Top recommended app_ids: {recommended_app_ids}")
         recommendations = filtered_games[filtered_games['app_id'].isin(
             recommended_app_ids)]
-        logger.info("Collaborative filtering produced recommendations.")
+        logger.info(
+            f"Collaborative filtering produced {len(recommendations)} recommendations.")
+        logger.debug(
+            f"Collaborative recommendations titles: {recommendations['title'].tolist() if 'title' in recommendations else 'N/A'}")
         return recommendations
     except Exception as e:
         logger.error(f"Error during collaborative filtering: {e}")
@@ -77,22 +84,58 @@ def collaborative_filtering_with_fallback(user_id: int, filtered_games: pd.DataF
     Returns:
         pd.DataFrame: DataFrame of top_n recommended games.
     """
+    logger.info(
+        f"[COLLABORATIVE] Starting collaborative filtering with fallback for user_id: {user_id}")
+    logger.info(
+        f"[COLLABORATIVE] Available filtered games: {len(filtered_games)}")
+    logger.info(f"[COLLABORATIVE] Session liked games: {session.liked_games}")
+
     recommendations = pd.DataFrame()
     user_embedding = None
 
-    # Attempt to obtain user embedding if user_id is available
+    # Step 1: Try collaborative filtering
     if user_id:
+        logger.info(
+            f"[COLLABORATIVE] User ID provided ({user_id}), attempting collaborative filtering...")
         user_embedding = get_user_embedding(user_id, ncf_model, user_encoder)
+        if user_embedding is None:
+            logger.warning(
+                f"[COLLABORATIVE] No user embedding found for user_id {user_id}. Skipping collaborative filtering.")
+        else:
+            logger.info(
+                f"[COLLABORATIVE] User embedding obtained successfully, shape: {user_embedding.shape}")
+    else:
+        logger.info(
+            f"[COLLABORATIVE] No user_id provided, skipping collaborative filtering.")
 
     if user_embedding is not None:
+        logger.info(
+            f"[COLLABORATIVE] Running collaborative filtering algorithm...")
         recommendations = collaborative_filtering(
             user_embedding, ncf_model, game_encoder, filtered_games, top_n)
+        logger.info(
+            f"[COLLABORATIVE] Collaborative filtering returned {len(recommendations)} recommendations.")
+        if not recommendations.empty:
+            logger.info(
+                f"[COLLABORATIVE] Collaborative recommendations: {recommendations['title'].tolist()}")
+        else:
+            logger.info(
+                f"[COLLABORATIVE] Collaborative filtering produced empty results.")
 
-    # Fallback: If collaborative filtering fails or returns insufficient recommendations,
-    # use content-based recommendation based on the user's liked games.
+    # Step 2: Fallback to content-based if needed
     if recommendations.empty or len(recommendations) < top_n:
+        reason = 'empty' if recommendations.empty else f'insufficient results ({len(recommendations)} < {top_n})'
+        logger.info(
+            f"[COLLABORATIVE] Falling back to content-based recommendations. Reason: {reason}")
+
         liked_query = " ".join(session.liked_games) if isinstance(
             session.liked_games, (list, set)) else session.liked_games
+        logger.info(f"[COLLABORATIVE] Content-based query: '{liked_query}'")
+        logger.info(
+            f"[COLLABORATIVE] Using genres: {session.user_preferences.get('genres', [])}")
+        logger.info(
+            f"[COLLABORATIVE] Using release year filter: {session.user_preferences.get('release_year_filter', None)}")
+
         recommendations = get_advanced_similar_games(
             user_query=liked_query,
             combined_df=filtered_games,
@@ -103,6 +146,19 @@ def collaborative_filtering_with_fallback(user_id: int, filtered_games: pd.DataF
             k=top_n
         )
         logger.info(
-            "Fell back to content-based recommendations due to insufficient collaborative filtering results.")
+            f"[COLLABORATIVE] Content-based fallback produced {len(recommendations)} recommendations.")
+        if not recommendations.empty:
+            logger.info(
+                f"[COLLABORATIVE] Content-based recommendations: {recommendations['title'].tolist()}")
+        else:
+            logger.info(
+                f"[COLLABORATIVE] Content-based fallback also produced empty results.")
+    else:
+        logger.info(
+            f"[COLLABORATIVE] Collaborative filtering successful, no fallback needed.")
 
-    return recommendations.head(top_n)
+    final_recommendations = recommendations.head(top_n)
+    logger.info(
+        f"[COLLABORATIVE] Final recommendations ({len(final_recommendations)}): {final_recommendations['title'].tolist() if not final_recommendations.empty else 'None'}")
+
+    return final_recommendations

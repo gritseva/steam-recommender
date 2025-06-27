@@ -27,9 +27,12 @@ def extract_game_titles(user_message: str, context) -> List[str]:
     """
     Use the LLM to pull out raw game titles from the user's text.
     """
+    logger.info(
+        f"[GAME_EXTRACTION] Starting game title extraction for message: '{user_message}'")
+
     if not isinstance(user_message, str):
         logger.error(
-            f"extract_game_titles got a {type(user_message)}; skipping.")
+            f"[GAME_EXTRACTION] Got a {type(user_message)}; skipping.")
         if isinstance(user_message, list):
             user_message = " ".join(str(x) for x in user_message)
         else:
@@ -38,7 +41,8 @@ def extract_game_titles(user_message: str, context) -> List[str]:
     tokenizer = context.bot_data.get("tokenizer")
     model = context.bot_data.get("transformer_model")
     if not tokenizer or not model:
-        logger.error("LLM model/tokenizer missing in context.bot_data.")
+        logger.error(
+            "[GAME_EXTRACTION] LLM model/tokenizer missing in context.bot_data.")
         return []
 
     prompt = (
@@ -47,6 +51,7 @@ def extract_game_titles(user_message: str, context) -> List[str]:
         "Reply with ONLY the game titles, separated by commas. No extra text.\n"
         "Example: The Witcher 3, Cyberpunk 2077 [/INST]"
     )
+    logger.debug(f"[GAME_EXTRACTION] LLM prompt: {prompt}")
 
     try:
         inputs = tokenizer(
@@ -66,10 +71,13 @@ def extract_game_titles(user_message: str, context) -> List[str]:
             pad_token_id=tokenizer.pad_token_id
         )
         result = tokenizer.decode(output[0], skip_special_tokens=True).strip()
+        logger.debug(f"[GAME_EXTRACTION] Raw LLM output: '{result}'")
 
         # If it echoed the [INST]… tags, chop them off
         if "[/INST]" in result:
             result = result.split("[/INST]", 1)[1].strip()
+            logger.debug(
+                f"[GAME_EXTRACTION] After removing [/INST]: '{result}'")
 
         # Split on commas and filter out any garbage
         titles = [t.strip() for t in result.split(",")]
@@ -77,10 +85,12 @@ def extract_game_titles(user_message: str, context) -> List[str]:
         titles = [t for t in titles if t and not any(x in t.lower() for x in [
             'message:', 'example:', 'output:', 'format:', 'no video game titles'
         ]) and 'no video game titles' not in t.lower()]
+
+        logger.info(f"[GAME_EXTRACTION] Extracted titles: {titles}")
         return titles
 
     except Exception:
-        logger.exception("Error in extract_game_titles")
+        logger.exception("[GAME_EXTRACTION] Error in extract_game_titles")
         return []
 
 
@@ -122,18 +132,18 @@ def infer_user_preferences_with_llm(user_message: str, context) -> Dict[str, Uni
 
         full = tokenizer.decode(output[0], skip_special_tokens=True)
 
-        # 1) strip off the echo of the prompt
-        if "[/INST]" in full:
-            full = full.split("[/INST]", 1)[1].strip()
-
-        # 2) now grab from the very first '{' through the very last '}'
-        start = full.find("{")
-        end = full.rfind("}") + 1
-        if start == -1 or end == 0:
-            raise ValueError("No JSON object found in model output")
-        json_blob = full[start:end]
-
-        prefs = json.loads(json_blob)
+        # Use regex to robustly extract the first JSON object
+        match = re.search(r'\{.*\}', full, re.DOTALL)
+        if match:
+            json_blob = match.group(0)
+            try:
+                prefs = json.loads(json_blob)
+            except json.JSONDecodeError:
+                logger.warning("LLM output contained malformed JSON.")
+                prefs = {}
+        else:
+            logger.warning("No JSON object found in LLM output.")
+            prefs = {}
 
     except Exception as e:
         logger.warning(f"LLM JSON parse failed ({e}), returning empty prefs")
@@ -153,11 +163,17 @@ def infer_user_preferences_with_llm(user_message: str, context) -> Dict[str, Uni
 def parse_user_intent(user_message: str, context) -> str:
     """
     Classify user intent into one of our categories, using few-shot examples.
+    Robustly extracts the classification from the model output by decoding ONLY
+    the newly generated tokens.
     """
+    logger.info(
+        f"[INTENT] Starting intent classification for message: '{user_message}'")
+
     tokenizer = context.bot_data.get("tokenizer")
     model = context.bot_data.get("transformer_model")
     if not tokenizer or not model:
-        logger.error("LLM model/tokenizer missing in context.bot_data.")
+        logger.error(
+            "[INTENT] LLM model/tokenizer missing in context.bot_data.")
         return "unknown"
 
     categories = [
@@ -167,42 +183,22 @@ def parse_user_intent(user_message: str, context) -> str:
         "genre_exploration", "content_filter", "game_session_reminder"
     ]
 
-    examples = [
-        ("Hi!", "greeting"),
-        ("Tell me a joke", "out_of_context"),
-        ("How do I cook pasta?", "out_of_context"),
-        ("What's the capital of France?", "out_of_context"),
-        ("Can you recommend some new RPGs?", "recommend_games"),
-        ("I want game recommendations similar to Minecraft", "recommend_games"),
-        ("My steam ID is 76561198129676583", "additional_info"),
-        ("Here's my Steam profile: https://steamcommunity.com/id/example", "additional_info"),
-        ("Compare Portal 2 and Half-Life.", "game_comparison"),
-        ("What do you think about Stardew Valley?", "opinion_request"),
-        ("What are the top RPG games?", "top_games_request"),
-        ("Show me a video of Minecraft gameplay", "video_search"),
-        ("Track the price of Cyberpunk 2077", "price_tracker"),
-        ("Remind me to play Portal 2 at 8 PM", "game_session_reminder"),
-        ("I don't want to see violent games", "content_filter"),
-        ("Hola, quiero recomendaciones de juegos", "translation"),
-        ("I love the recommendations you gave me!", "feedback"),
-        ("The price tracking feature is really useful", "feedback"),
-        ("Are you a real person?", "out_of_context"),
-        ("Give me gaming news", "gaming_news"),
-        ("Show me the best games in the adventure genre", "genre_exploration"),
-        ("What's the weather like today?", "out_of_context")
+    # A slightly improved prompt structure for clarity
+    prompt_lines = [
+        "[INST] Classify the following message into exactly ONE category.",
+        "Respond with ONLY the category name in lowercase.",
+        "\nExamples:",
+        '"Hi!" → greeting',
+        '"Recommend me some RPGs." → recommend_games',
+        '"My steam ID is 76561198129676583" → additional_info',
+        '"Compare Portal 2 and Half-Life." → game_comparison',
+        '"Tell me a joke" → out_of_context',
+        f'\nCategories: {", ".join(categories)}',
+        f'\nNow classify this message:\nMessage: "{user_message}"',
+        "[/INST]"  # The model will generate text immediately after this tag
     ]
-
-    # Build the prompt
-    prompt_lines = ["[INST] Classify this message into exactly one category.",
-                    "Reply with ONLY the single category name, in lowercase.",
-                    "\nExamples:"]
-    for msg, cat in examples:
-        prompt_lines.append(f"\"{msg}\" → {cat}")
-    prompt_lines.append(
-        f"\nNow classify this one:\nMessage: \"{user_message}\"")
-    prompt_lines.append("\nCategories: " + ", ".join(categories))
-    prompt_lines.append("[/INST]")
     prompt = "\n".join(prompt_lines)
+    logger.debug(f"[INTENT] LLM prompt: {prompt}")
 
     try:
         inputs = tokenizer(
@@ -211,36 +207,36 @@ def parse_user_intent(user_message: str, context) -> str:
             padding=True,
             truncation=True,
             max_length=512
-        )
-        inputs = move_to_device(inputs, model.device)
+        ).to(model.device)
 
         output = model.generate(
             **inputs,
-            max_new_tokens=30,      # FIXED: Increased from 8 to allow for longer category names
-            do_sample=False,
+            max_new_tokens=10,      # We only need one or two words
+            do_sample=False,        # Use greedy decoding for consistency
             pad_token_id=tokenizer.eos_token_id
         )
+
+        # Decode ONLY the generated part
+        input_length = inputs['input_ids'].shape[1]
+        generated_tokens = output[0, input_length:]  # Slice the output tensor
         result = tokenizer.decode(
-            output[0], skip_special_tokens=True).strip()
+            generated_tokens, skip_special_tokens=True).strip().lower()
 
-        # FIXED: Clean the prompt echo from the result
-        if "[/INST]" in result:
-            result = result.split("[/INST]", 1)[1].strip()
+        logger.info(f"[INTENT] Raw model output: '{result}'")
 
-        # FIXED: Use a more robust parsing logic
-        result = result.lower()
-        for cat in categories:
-            if cat in result:
+        # Find the first valid category in the cleaned output
+        for category in categories:
+            if category in result:
                 logger.info(
-                    f"LLM output '{result}' classified as intent '{cat}'")
-                return cat
+                    f"[INTENT] Successfully classified as: '{category}'")
+                return category
 
         logger.warning(
-            f"Could not classify intent from LLM output: '{result}' for message: '{user_message}'")
+            f"[INTENT] No valid category found in model output: '{result}'")
         return "unknown"
 
-    except Exception:
-        logger.exception("Error in parse_user_intent")
+    except Exception as e:
+        logger.exception(f"[INTENT] Error in parse_user_intent: {e}")
         return "unknown"
 
 
